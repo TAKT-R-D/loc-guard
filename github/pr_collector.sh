@@ -10,7 +10,7 @@ echo "id,created_at,merged_at,loc"
 AFTER="null"
 
 while :; do
-  # GraphQL クエリ：MERGED の PR を新しい順に 100 件取得
+  # GraphQL Query：get latest 100 MERGED PRs
   RESP="$(
     gh api graphql -F owner="$OWNER" -F name="$NAME" -F after="$AFTER" -f query='
       query($owner:String!, $name:String!, $after:String) {

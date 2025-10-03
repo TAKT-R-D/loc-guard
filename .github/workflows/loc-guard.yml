@@ -46,7 +46,9 @@ jobs:
 
                   if [ "$CHANGED" -ge "$LOC_THRESHOLD" ]; then
                     gh pr comment "$PR_NUMBER" \
-                      --body "⚠️ **LOC Guard**: $CHANGED lines changed ( +$ADD / -$DEL ) — threshold **${LOC_THRESHOLD}** or more.\n\nPlease consider splitting the PR or reducing diff size."
+                      --body "⚠️ **LOC Guard**: $CHANGED lines changed ( +$ADD / -$DEL ) — threshold **${LOC_THRESHOLD}** or more.
+                      
+                      Please consider splitting the PR or reducing diff size."
                     if [ "${GUARD_LEVEL}" = "1" ]; then
                       echo "::error::LOC Guard threshold exceeded"
                       exit 1
