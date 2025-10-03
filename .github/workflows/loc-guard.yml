@@ -10,7 +10,7 @@ on:
             - "deploy/**"
 
 env:
-    LOC_THRESHOLD: "100" # Number of lines changed to trigger the guard
+    LOC_THRESHOLD: "10" # Number of lines changed to trigger the guard
     GUARD_LEVEL: "1" # 0 = Warn (comment only), 1 = Block (CI fail)
 
 jobs:
