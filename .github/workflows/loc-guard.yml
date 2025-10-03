@@ -11,7 +11,7 @@ on:
 
 env:
     LOC_THRESHOLD: "100" # Number of lines changed to trigger the guard
-    GUARD_LEVEL: "0" # 0 = Warn (comment only), 1 = Block (CI fail)
+    GUARD_LEVEL: "1" # 0 = Warn (comment only), 1 = Block (CI fail)
 
 jobs:
     loc-guard:
