@@ -1,0 +1,117 @@
+## Include in your .gitlab-ci.yml before the stages section.
+# ============================================
+# include:
+#   - local: '.gitlab/ci/loc_guard.yml'
+# stages:...
+# ============================================
+# LOC Guard for Merge Requests (GitLab API)
+# - For MR events only (does not run on push)
+# - Skips MRs targeting deploy|release|master branches (can be changed)
+# - Excludes vendor/node_modules/dist/public/build/storage/*.min.*/lock files/images/PDF/SVG
+# - When threshold is exceeded:
+#     * GUARD_LEVEL=0 → Warn (comment on MR / optional)
+#     * GUARD_LEVEL=1 → Block (job fails; cannot merge if Pipelines must succeed)
+# - MR comments are posted only if Project Access Token (api scope) is set to CI variable GITLAB_ACCESS_TOKEN
+#   (Note creation may be restricted with CI_JOB_TOKEN)
+# ============================================
+
+stages: [check]
+
+# Pipeline trigger conditions (MR events only)
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - when: never
+
+variables:
+  LOC_THRESHOLD: "500" # Threshold (sum of added + deleted lines)
+  GUARD_LEVEL: "0" # 0=Warn (comment only), 1=Block (comment + CI failure)
+  # Exclude base branches (e.g. MRs targeting deploy/release/master are excluded)
+  BASE_EXCLUDE_REGEX: "^(deploy|release|master)($|/)"
+  # Exclusion patterns (should match mr_collector.sh)
+  # - Directories: vendor/**, node_modules/**, public/build/**, storage/**, dist/**
+  # - Minified: *.min.*
+  # - Lock files: composer.lock, package-lock.json, yarn.lock, pnpm-lock.yaml
+  # - Binary files: .png, .jpg, .jpeg, .gif, .pdf, .svg
+  EXCLUDE_RE: '^(vendor/|node_modules/|public/build/|storage/|dist/)|(\.min\.[^/]+$)|(^|/)(composer\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|(\.(png|jpg|jpeg|gif|pdf|svg)$)'
+
+loc_guard:
+  stage: check
+  image: alpine:3.20
+  rules:
+    # Run only for MR events
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Exclude base branches (e.g. deploy|release|master)
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /$BASE_EXCLUDE_REGEX/i
+      when: never
+    - when: on_success
+  before_script:
+    - apk add --no-cache curl jq
+  script:
+    - |
+      set -euo pipefail
+
+      # MR context
+      : "${CI_PROJECT_ID:?}"
+      : "${CI_MERGE_REQUEST_IID:?}"
+
+      # Call changes API, exclude specified paths, and count added/deleted lines
+      # Authentication uses JOB-TOKEN (read access for same project)
+      API="$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/changes"
+
+      # Aggregate per file with jq (exclude +++ / --- headers)
+      read ADD DEL <<EOF
+      $(curl -sf --header "JOB-TOKEN: $CI_JOB_TOKEN" "$API" \
+        | jq -r --arg re "$EXCLUDE_RE" '
+            [
+              .changes[]
+              | select( (.new_path | test($re) | not) and (.old_path | test($re) | not) )
+              | ( .diff // "" | split("\n")
+                  | {
+                      add: ( map(select(startswith("+") and (.[0:3] != "+++"))) | length ),
+                      del: ( map(select(startswith("-") and (.[0:3] != "---"))) | length )
+                    }
+                )
+            ]
+            | reduce .[] as $f ({add:0, del:0}; {add: .add + $f.add, del: .del + $f.del})
+            | "\(.add) \(.del)"
+          ')
+      EOF
+
+      CHANGED=$((ADD + DEL))
+
+      echo "LOC Guard → +$ADD / -$DEL = $CHANGED (threshold >= $LOC_THRESHOLD)"
+
+      # Post comment to MR (optional)
+      # - Only posts if Project Access Token (api scope) is set to GITLAB_ACCESS_TOKEN
+      comment_warn() {
+        local body="⚠️ **LOC Guard**: ${CHANGED} lines changed ( +${ADD} / -${DEL} ) — threshold **${LOC_THRESHOLD}** or more.
+
+        Please consider splitting the MR or reducing diff size."
+        curl -sf -X POST \
+          --header "PRIVATE-TOKEN: $GITLAB_ACCESS_TOKEN" \
+          --data-urlencode "body=${body}" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes" >/dev/null || true
+      }
+      comment_ok() {
+        local body="✅ **LOC Guard**: ${CHANGED} lines changed ( +${ADD} / -${DEL} ) — under threshold **${LOC_THRESHOLD}**. Looks good!"
+        curl -sf -X POST \
+          --header "PRIVATE-TOKEN: $GITLAB_ACCESS_TOKEN" \
+          --data-urlencode "body=${body}" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes" >/dev/null || true
+      }
+
+      if [ "$CHANGED" -ge "$LOC_THRESHOLD" ]; then
+        # Post comment (if token is set)
+        if [ -n "${GITLAB_ACCESS_TOKEN:-}" ]; then comment_warn; fi
+
+        # If Block mode, fail the job
+        if [ "$GUARD_LEVEL" = "1" ]; then
+          echo "ERROR: LOC Guard threshold exceeded (CHANGED=$CHANGED, THRESHOLD=$LOC_THRESHOLD)"
+          exit 1
+        fi
+      else
+        # Post pass comment (optional)
+        if [ -n "${GITLAB_ACCESS_TOKEN:-}" ]; then comment_ok; fi
+      fi
+  allow_failure: false
